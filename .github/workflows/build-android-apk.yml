@@ -17,94 +17,130 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Download repository source code
+      # 1. Checkout repository
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # 2. Set up Node.js
+      # 2. Setup Node.js
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      # 3. Set up Java
+      # 3. Setup Java
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
-      # 4. Set up Android SDK
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # 4. Setup Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
 
-      # 5. Install Android SDK packages
+      # 5. Configure Android SDK
+      - name: Configure Android SDK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+
+      # 6. Install Android SDK packages
       - name: Install Android SDK packages
         run: |
-          sdkmanager --install \
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
             "platform-tools" \
             "platforms;android-36" \
             "build-tools;36.0.0"
 
-      # 6. Install project dependencies
+      # 7. Verify project files
+      - name: Verify project configuration
+        run: |
+          test -f package.json || (echo "ERROR: package.json missing" && exit 1)
+          test -f capacitor.config.ts -o -f capacitor.config.json -o -f capacitor.config.js || (echo "ERROR: Capacitor config missing" && exit 1)
+
+      # 8. Install npm dependencies
       - name: Install web dependencies
         run: npm install
 
-      # 7. Build React web application
-      - name: Build web game
+      # 9. Verify Capacitor dependencies
+      - name: Verify Capacitor dependencies
+        run: |
+          npm ls @capacitor/core @capacitor/cli @capacitor/android
+
+      # 10. Build React application
+      - name: Build web application
         run: npm run build
 
-      # 8. Check Capacitor configuration
-      - name: Check Capacitor
-        run: |
-          node -e "require.resolve('@capacitor/core')"
-          node -e "require.resolve('@capacitor/android')"
-
-      # 9. Create Android project if it does not exist
-      - name: Generate Android wrapper
+      # 11. Add Android platform if missing
+      - name: Generate Android project
         run: |
           if [ ! -d android ]; then
             npx cap add android
           fi
 
-      # 10. Sync web application with Android
+      # 12. Sync application
       - name: Sync Android project
         run: npx cap sync android
 
-      # 11. Configure portrait orientation
+      # 13. Configure portrait orientation
       - name: Configure portrait orientation
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
-
+          
           manifest = Path("android/app/src/main/AndroidManifest.xml")
+          
+          if not manifest.exists():
+              raise SystemExit("AndroidManifest.xml not found")
+          
           content = manifest.read_text()
-
-          content, count = re.subn(
-              r'<activity\b(?![^>]*android:screenOrientation=)',
-              '<activity android:screenOrientation="portrait"',
-              content,
-              count=1
-          )
-
-          if count == 0:
-              print("Activity orientation already configured or activity not found.")
+          
+          pattern = r'<activity\b[^>]*>'
+          match = re.search(pattern, content)
+          
+          if not match:
+              raise SystemExit("No Android activity found in manifest")
+          
+          activity = match.group(0)
+          
+          if 'android:screenOrientation=' in activity:
+              activity = re.sub(
+                  r'android:screenOrientation="[^"]*"',
+                  'android:screenOrientation="portrait"',
+                  activity
+              )
           else:
-              manifest.write_text(content)
-              print("Portrait orientation configured.")
+              activity = activity[:-1] + ' android:screenOrientation="portrait">'
+          
+          content = content[:match.start()] + activity + content[match.end():]
+          manifest.write_text(content)
+          
+          print("Portrait orientation configured successfully")
           PY
 
-      # 12. Make Gradle executable
-      - name: Set Gradle permissions
-        run: chmod +x android/gradlew
+      # 14. Check Gradle wrapper
+      - name: Check Gradle wrapper
+        run: |
+          test -f android/gradlew || (echo "Gradle wrapper missing" && exit 1)
+          chmod +x android/gradlew
 
-      # 13. Build Android debug APK
-      - name: Build debug APK
+      # 15. Build debug APK
+      - name: Build Android debug APK
         working-directory: android
         run: ./gradlew assembleDebug
 
-      # 14. Upload APK as downloadable artifact
+      # 16. Verify APK
+      - name: Verify APK
+        run: |
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK" || (echo "APK was not generated" && exit 1)
+          ls -lh "$APK"
+
+      # 17. Upload APK
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
